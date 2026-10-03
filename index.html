@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Mô Phỏng Lái Xe 3D - Bấm Cảm Ứng</title>
+  <style>
+    * { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+    body { margin: 0; overflow: hidden; background: #000; font-family: Arial, sans-serif; }
+    #canvas-container { width: 100vw; height: 100vh; position: absolute; top:0; left:0; z-index: 1; }
+
+    #touch-controls {
+      position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+      z-index: 10; pointer-events: none;
+    }
+
+    .left-panel {
+      position: absolute; bottom: 20px; left: 20px;
+      display: flex; gap: 10px; pointer-events: auto;
+    }
+    .btn-signal {
+      width: 60px; height: 60px; background: rgba(255, 255, 255, 0.2);
+      border: 2px solid #fff; color: #fff; font-size: 20px; font-weight: bold;
+      border-radius: 12px; display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .btn-signal.active { background: #ffaa00; color: #000; }
+
+    .right-panel {
+      position: absolute; bottom: 20px; right: 20px; pointer-events: auto;
+    }
+    #btn-brake {
+      width: 100px; height: 100px; background: rgba(220, 53, 69, 0.85);
+      border: 3px solid #ffffff; color: white; font-size: 18px; font-weight: bold;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 15px rgba(220, 53, 69, 0.5);
+    }
+    #btn-brake:active { background: #a71d2a; transform: scale(0.92); }
+
+    /* Màn hình Start & Cảnh báo */
+    .overlay-modal {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%); background: rgba(20, 20, 20, 0.95);
+      color: #fff; padding: 20px; border-radius: 16px; border: 2px solid #ff4444;
+      text-align: center; width: 85%; max-width: 380px; z-index: 100;
+      box-shadow: 0 0 25px rgba(255, 68, 68, 0.4);
+    }
+    .overlay-modal h3 { color: #ff4444; margin: 0 0 10px 0; font-size: 20px; }
+    .overlay-modal p { font-size: 14px; line-height: 1.4; margin: 8px 0; }
+    .overlay-modal .law-rule { font-size: 12px; color: #aaa; background: #222; padding: 8px; border-radius: 6px; }
+    .overlay-modal button {
+      background: #28a745; border: none; color: white; padding: 12px 20px;
+      font-size: 16px; font-weight: bold; border-radius: 8px; margin-top: 12px; width: 100%;
+      cursor: pointer;
+    }
+    #alert-modal button { background: #ff4444; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+  <div id="canvas-container"></div>
+
+  <!-- Màn hình chuẩn bị trước khi chơi -->
+  <div id="start-modal" class="overlay-modal" style="border-color: #28a745;">
+    <h3 style="color: #28a745;">TÌNH HUỐNG 1</h3>
+    <p><b>Xe phía trước phanh gấp!</b></p>
+    <p>Nhiệm vụ: Giữ khoảng cách và nhấn giữ nút <b>PHANH</b> kịp thời khi xe phía trước dừng lại.</p>
+    <button onclick="startGame()">BẮT ĐẦU LÁI XE</button>
+  </div>
+
+  <!-- Bảng nút bấm -->
+  <div id="touch-controls">
+    <div class="left-panel">
+      <div class="btn-signal" id="btn-left" onclick="toggleSignal('left')">⬅️</div>
+      <div class="btn-signal" id="btn-right" onclick="toggleSignal('right')">➡</div>
+    </div>
+    <div class="right-panel">
+      <div id="btn-brake">PHANH</div>
+    </div>
+  </div>
+
+  <!-- Bảng vi phạm -->
+  <div id="alert-modal" class="overlay-modal" style="display: none;">
+    <h3 id="modal-title">CẢNH BÁO VI PHẠM!</h3>
+    <p id="modal-desc"></p>
+    <p id="modal-law" class="law-rule"></p>
+    <button onclick="resetGame()">Thử lại tình huống</button>
+  </div>
+
+  <script>
+    let scene, camera, renderer;
+    let frontCar;
+    let isBraking = false;
+    let isGameRunning = false;
+    let isGameOver = false;
+    
+    // Tốc độ chậm hơn để dễ quan sát
+    let playerSpeed = 0.15;
+    let frontCarSpeed = 0.15;
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x7ec0ee);
+
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+      camera.position.set(0, 1.3, 0);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+      const light = new THREE.DirectionalLight(0xffffff, 1.2);
+      light.position.set(5, 10, 7);
+      scene.add(light);
+      scene.add(new THREE.AmbientLight(0x707070));
+
+      // Mặt đường
+      const roadGeo = new THREE.PlaneGeometry(12, 1000);
+      const roadMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
+      const road = new THREE.Mesh(roadGeo, roadMat);
+      road.rotation.x = -Math.PI / 2;
+      scene.add(road);
+
+      // Vạch kẻ đường giữa
+      const stripeGeo = new THREE.PlaneGeometry(0.3, 1000);
+      const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const stripe = new THREE.Mesh(stripeGeo, stripeMat);
+      stripe.rotation.x = -Math.PI / 2;
+      stripe.position.y = 0.01;
+      scene.add(stripe);
+
+      // Xe phía trước (To rõ màu đỏ)
+      const carGeo = new THREE.BoxGeometry(2.2, 1.6, 4.2);
+      const carMat = new THREE.MeshLambertMaterial({ color: 0xee2222 });
+      frontCar = new THREE.Mesh(carGeo, carMat);
+      frontCar.position.set(0, 0.8, -40); // Đặt xa hẳn 40m
+      scene.add(frontCar);
+
+      // Sự kiện Phanh cảm ứng
+      const brakeBtn = document.getElementById('btn-brake');
+      const startBrake = (e) => { e.preventDefault(); isBraking = true; };
+      const stopBrake = (e) => { e.preventDefault(); isBraking = false; };
+
+      brakeBtn.addEventListener('touchstart', startBrake);
+      brakeBtn.addEventListener('touchend', stopBrake);
+      brakeBtn.addEventListener('mousedown', startBrake);
+      brakeBtn.addEventListener('mouseup', stopBrake);
+
+      window.addEventListener('resize', onWindowResize);
+      renderer.render(scene, camera);
+    }
+
+    function startGame() {
+      document.getElementById('start-modal').style.display = 'none';
+      isGameRunning = true;
+      animate();
+    }
+
+    function animate() {
+      if (!isGameRunning || isGameOver) return;
+      requestAnimationFrame(animate);
+
+      // Xe trước di chuyển
+      frontCar.position.z -= frontCarSpeed;
+
+      // Khi xe trước chạy được khoảng -80m thì nó phanh gấp dừng lại
+      if (frontCar.position.z < -80) {
+        frontCarSpeed = 0;
+      }
+
+      // Xử lý phanh người chơi
+      if (isBraking) {
+        playerSpeed = Math.max(0, playerSpeed - 0.008);
+      }
+
+      camera.position.z -= playerSpeed;
+
+      // Tính khoảng cách
+      let distance = camera.position.z - frontCar.position.z;
+
+      // Bắt lỗi va chạm
+      if (distance > -3.5 && playerSpeed > 0.02) {
+        showViolation(
+          "GÂY VA CHẠM KHẨN CẤP!",
+          "Bạn chưa giữ khoảng cách an toàn và đạp phanh quá muộn khi xe phía trước phanh gấp.",
+          "Quy định: Phải duy trì khoảng cách an toàn tối thiểu với xe phía trước để xử lý kịp thời."
+        );
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function showViolation(title, desc, law) {
+      isGameOver = true;
+      document.getElementById('modal-title').innerText = title;
+      document.getElementById('modal-desc').innerText = desc;
+      document.getElementById('modal-law').innerText = law;
+      document.getElementById('alert-modal').style.display = 'block';
+    }
+
+    function resetGame() {
+      isGameOver = false;
+      isBraking = false;
+      playerSpeed = 0.15;
+      frontCarSpeed = 0.15;
+      camera.position.set(0, 1.3, 0);
+      frontCar.position.set(0, 0.8, -40);
+      document.getElementById('alert-modal').style.display = 'none';
+      animate();
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    init();
+  </script>
+</body>
+</html>
